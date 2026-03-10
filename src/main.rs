@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::File;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use rustyline::completion::FilenameCompleter;
@@ -74,6 +74,43 @@ fn main() {
                     continue;
                 }
 
+                for token in &mut tokens {
+                    if token.starts_with('~') {
+                        if let Some(home) = dirs::home_dir() {
+                            *token = token.replacen('~', &home.to_string_lossy(), 1);
+                        }
+                    }
+
+                    if token.contains('$') {
+                        let mut expanded_token = String::new();
+                        let mut chars = token.chars().peekable();
+
+                        while let Some(c) = chars.next() {
+                            if c == '$' {
+                                let mut var_name = String::new();
+
+                                while let Some(&next_c) = chars.peek() {
+                                    if next_c.is_alphanumeric() || next_c == '_' {
+                                        var_name.push(chars.next().unwrap());
+                                    } else {
+                                        break;
+                                    }
+                                }
+
+                                if !var_name.is_empty() {
+                                    expanded_token
+                                        .push_str(&env::var(&var_name).unwrap_or_default());
+                                } else {
+                                    expanded_token.push('$');
+                                }
+                            } else {
+                                expanded_token.push(c);
+                            }
+                        }
+                        *token = expanded_token;
+                    }
+                }
+
                 // detect background jobs
                 let run_in_background = if input.ends_with('&') {
                     input.pop();
@@ -104,10 +141,28 @@ fn main() {
                     if cmd == "exit" {
                         break;
                     } else if cmd == "cd" {
-                        let new_dir = args.first().map_or("/", |x| x.as_str());
-                        let root = Path::new(new_dir);
-                        if let Err(e) = env::set_current_dir(&root) {
+                        let default_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+
+                        let target_dir = if let Some(dir) = args.first() {
+                            Path::new(dir)
+                        } else {
+                            default_dir.as_path()
+                        };
+
+                        if let Err(e) = env::set_current_dir(&target_dir) {
                             eprintln!("cd Error: {}", e);
+                        }
+                        continue;
+                    } else if cmd == "export" {
+                        if let Some(arg) = args.first() {
+                            let parts: Vec<&str> = arg.splitn(2, '=').collect();
+                            if parts.len() == 2 {
+                                unsafe {
+                                    env::set_var(parts[0], parts[1]);
+                                }
+                            } else {
+                                eprintln!("Export usage: export VAR+VALUE");
+                            }
                         }
                         continue;
                     }
